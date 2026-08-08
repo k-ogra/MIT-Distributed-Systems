@@ -1,10 +1,17 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
-
+import (
+	"encoding/json"
+	"fmt"
+	"hash/fnv"
+	"io/ioutil"
+	"log"
+	"net/rpc"
+	"os"
+	"path/filepath"
+	"sort"
+	"time"
+)
 
 //
 // Map functions return a slice of KeyValue.
@@ -13,6 +20,12 @@ type KeyValue struct {
 	Key   string
 	Value string
 }
+// for sorting by key.
+type ByKey []KeyValue
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 //
 // use ihash(key) % NReduce to choose the reduce
@@ -30,13 +43,131 @@ func ihash(key string) int {
 //
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
-
 	// Your worker implementation here.
-
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
 
+	// Loop indef while 
+	for {
+		args := RequestTask{}
+		reply := TaskReply{}
+
+		ok := call("Coordinator.GiveTask", &args, &reply)
+		if !ok {
+			// coordinator gone — assume job is done, exit
+			return
+		}
+
+		switch reply.m_taskType {
+			case TaskWait:
+				time.Sleep(5)
+			case TaskMap: 
+				filename := reply.m_filename
+				intermediate := []KeyValue{}
+
+				file, err := os.Open(filename)
+				if err != nil {
+					log.Fatalf("cannot open %v", filename)
+				}
+				content, err := ioutil.ReadAll(file)
+				if err != nil {
+					log.Fatalf("cannot read %v", filename)
+				}
+				file.Close()
+				kva := mapf(filename, string(content))
+				sort.Sort(ByKey(intermediate))
+
+				intermediate = append(intermediate, kva...)
+
+				reduceTaskNum := ihash(filename) % reply.m_nReduce
+				outFilename := "mr-" + string(reply.m_taskID) + string(reduceTaskNum)
+				mapFile, mapFileErr := os.Create(outFilename)
+				if mapFileErr != nil {
+					log.Fatalf("cannot create %v", filename)
+				}
+
+				enc := json.NewEncoder(mapFile)
+				for _, kv := range intermediate {
+					err := enc.Encode(&kv)
+					if err != nil {
+						log.Fatalf("cannot encode %v", kv)
+					}
+				}
+
+				taskCompletionArgs := TaskCompletion{m_taskId: reply.m_taskID, m_taskType: TaskMap}
+				replyCompletion := TaskCompletion{}
+				ok := call("Coordinator.RegisterTaskCompletion", &taskCompletionArgs, &replyCompletion)
+				if !ok {
+					log.Fatalf("register task compl failed")
+				}
+				
+
+
+			case TaskReduce:
+				reduceTaskNum := reply.m_taskID
+				outFilename := "mr-out-" + string(reduceTaskNum)
+				reduceFile, reduceFileErr := os.Create(outFilename)
+				if reduceFileErr != nil {
+					log.Fatalf("cannot read %v", outFilename)
+				}		
+
+				matches, err := filepath.Glob("*-" + outFilename)
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				for _, name := range matches {
+					
+					file, err := os.Open(name)
+					if err != nil {
+						log.Fatal(err)
+					}
+
+					dec := json.NewDecoder(file)
+					kva := []KeyValue{}
+					for {
+						var kv KeyValue
+						if err := dec.Decode(&kv); err != nil {
+							break
+						}
+						kva = append(kva, kv)
+					}
+
+					//
+					// call Reduce on each distinct key in intermediate[],
+					// and print the result to mr-out-0.
+					//
+					i := 0
+					for i < len(kva) {
+						j := i + 1
+						// get however many of curr key K there are 
+						for j < len(kva) && kva[j].Key == kva[i].Key {
+							j++
+						}
+						values := []string{}
+						// aggregate count of current key K  
+						for k := i; k < j; k++ {
+							values = append(values, kva[k].Value)
+						}
+						output := reducef(kva[i].Key, values)
+
+						// this is the correct format for each line of Reduce output.
+						fmt.Fprintf(reduceFile, "%v %v\n", kva[i].Key, output)
+						i = j
+					}
+					reduceFile.Close()
+				}
+
+				taskCompletionArgs := TaskCompletion{m_taskId: reply.m_taskID, m_taskType: TaskMap}
+				replyCompletion := TaskCompletion{}
+				ok := call("Coordinator.RegisterTaskCompletion", &taskCompletionArgs, &replyCompletion)
+				if !ok {
+					log.Fatalf("register task compl failed")
+				}
+		}	
+	}
 }
+
 
 //
 // example function to show how to make an RPC call to the coordinator.
