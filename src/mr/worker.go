@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/rpc"
@@ -91,7 +92,7 @@ func Worker(mapf func(string, string) []KeyValue,
 
 				for i := 0; i < reply.M_nReduce; i++ {
 					tmpFiles[i].Close()
-					os.Rename(tmpFiles[i].Name(), fmt.Sprintf("mr-%d-%d", reply.M_taskID, i))
+					os.Rename(tmpFiles[i].Name(), fmt.Sprintf("mr-int-%d-%d", reply.M_taskID, i))
 				}
 
 				taskCompletionArgs := TaskCompletion{M_taskId: reply.M_taskID, M_taskType: TaskMap}
@@ -106,60 +107,58 @@ func Worker(mapf func(string, string) []KeyValue,
 
 			case TaskReduce:
 				reduceTaskNum := reply.M_taskID
-				outFilename := "mr-out-" + strconv.Itoa(reduceTaskNum)
-				reduceFile, reduceFileErr := os.Create(outFilename)
-				if reduceFileErr != nil {
-					log.Fatalf("cannot open %v", outFilename)
-				}		
+				tmpFile, _ := os.CreateTemp(".", "mr-tmp-" + strconv.Itoa(reduceTaskNum))
 
 				// Find all mapped files ending in Y(reduceNum) 
-				matches, err := filepath.Glob("*-" + strconv.Itoa(reduceTaskNum))
+				matches, err := filepath.Glob("mr-int-*-" + strconv.Itoa(reduceTaskNum))
 				if err != nil {
 					log.Fatal(err)
 				}
 
-				for _, name := range matches {
-					
-					file, err := os.Open(name)
+				kva := []KeyValue{}
+				for _, filename := range matches {
+					file, err := os.Open(filename)
 					if err != nil {
 						log.Fatal(err)
 					}
-
+						
 					dec := json.NewDecoder(file)
-					kva := []KeyValue{}
 					for {
 						var kv KeyValue
 						if err := dec.Decode(&kv); err != nil {
-							break
+							if err == io.EOF {
+								break
+							}
+							log.Fatalf("decode %v: %v", filename, err)
 						}
 						kva = append(kva, kv)
 					}
-					sort.Sort(ByKey(kva))
-
-					//
-					// call Reduce on each distinct key in intermediate[],
-					// and print the result to mr-out-Y.
-					//
-					i := 0
-					for i < len(kva) {
-						j := i + 1
-						// get however many of curr key K there are 
-						for j < len(kva) && kva[j].Key == kva[i].Key {
-							j++
-						}
-						values := []string{}
-						// aggregate count of current key K  
-						for k := i; k < j; k++ {
-							values = append(values, kva[k].Value)
-						}
-						output := reducef(kva[i].Key, values)
-
-						// this is the correct format for each line of Reduce output.
-						fmt.Fprintf(reduceFile, "%v %v\n", kva[i].Key, output)
-						i = j
-					}
-					reduceFile.Close()
+					file.Close()
 				}
+
+				// call Reduce on each distinct key in kva[],
+				// and print the result to mr-out-Y.
+				sort.Sort(ByKey(kva))
+				i := 0
+				for i < len(kva) {
+					j := i + 1
+					// get however many of curr key K there are 
+					for j < len(kva) && kva[j].Key == kva[i].Key {
+						j++
+					}
+					values := []string{}
+					// aggregate count of current key K  
+					for k := i; k < j; k++ {
+						values = append(values, kva[k].Value)
+					}
+					output := reducef(kva[i].Key, values)
+
+					// this is the correct format for each line of Reduce output.
+					fmt.Fprintf(tmpFile, "%v %v\n", kva[i].Key, output)
+					i = j
+				}
+				os.Rename(tmpFile.Name(), fmt.Sprintf("mr-out-%d", reduceTaskNum))
+
 
 				taskCompletionArgs := TaskCompletion{M_taskId: reply.M_taskID, M_taskType: TaskReduce}
 				// TODO: This is unused could we remove? 
