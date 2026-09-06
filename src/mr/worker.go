@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"time"
 )
 
@@ -58,12 +59,12 @@ func Worker(mapf func(string, string) []KeyValue,
 			return
 		}
 
-		switch reply.m_taskType {
+		switch reply.M_taskType {
 			case TaskWait:
-				time.Sleep(5)
+				time.Sleep(5 * time.Second)
 			case TaskMap: 
-				filename := reply.m_filename
-				intermediate := []KeyValue{}
+				filename := reply.M_filename
+				// intermediate := []KeyValue{}
 
 				file, err := os.Open(filename)
 				if err != nil {
@@ -75,26 +76,26 @@ func Worker(mapf func(string, string) []KeyValue,
 				}
 				file.Close()
 				kva := mapf(filename, string(content))
-				sort.Sort(ByKey(intermediate))
+				// sort.Sort(ByKey(intermediate))
 
-				intermediate = append(intermediate, kva...)
-
-				reduceTaskNum := ihash(filename) % reply.m_nReduce
-				outFilename := "mr-" + string(reply.m_taskID) + string(reduceTaskNum)
-				mapFile, mapFileErr := os.Create(outFilename)
-				if mapFileErr != nil {
-					log.Fatalf("cannot create %v", filename)
+				tmpFiles := make([]*os.File, reply.M_nReduce)
+				encoders := make([]*json.Encoder, reply.M_nReduce)
+				for i := 0; i < reply.M_nReduce; i++ {
+					tmpFiles[i], _ = os.CreateTemp(".", "mr-tmp-*")
+					encoders[i] = json.NewEncoder(tmpFiles[i])
 				}
 
-				enc := json.NewEncoder(mapFile)
-				for _, kv := range intermediate {
-					err := enc.Encode(&kv)
-					if err != nil {
-						log.Fatalf("cannot encode %v", kv)
-					}
+				for _, kv := range kva {
+					encoders[ihash(kv.Key)%reply.M_nReduce].Encode(&kv)
 				}
 
-				taskCompletionArgs := TaskCompletion{m_taskId: reply.m_taskID, m_taskType: TaskMap}
+				for i := 0; i < reply.M_nReduce; i++ {
+					tmpFiles[i].Close()
+					os.Rename(tmpFiles[i].Name(), fmt.Sprintf("mr-%d-%d", reply.M_taskID, i))
+				}
+
+				taskCompletionArgs := TaskCompletion{M_taskId: reply.M_taskID, M_taskType: TaskMap}
+				// TODO: This is unused could we remove? 
 				replyCompletion := TaskCompletion{}
 				ok := call("Coordinator.RegisterTaskCompletion", &taskCompletionArgs, &replyCompletion)
 				if !ok {
@@ -104,14 +105,15 @@ func Worker(mapf func(string, string) []KeyValue,
 
 
 			case TaskReduce:
-				reduceTaskNum := reply.m_taskID
-				outFilename := "mr-out-" + string(reduceTaskNum)
+				reduceTaskNum := reply.M_taskID
+				outFilename := "mr-out-" + strconv.Itoa(reduceTaskNum)
 				reduceFile, reduceFileErr := os.Create(outFilename)
 				if reduceFileErr != nil {
-					log.Fatalf("cannot read %v", outFilename)
+					log.Fatalf("cannot open %v", outFilename)
 				}		
 
-				matches, err := filepath.Glob("*-" + outFilename)
+				// Find all mapped files ending in Y(reduceNum) 
+				matches, err := filepath.Glob("*-" + strconv.Itoa(reduceTaskNum))
 				if err != nil {
 					log.Fatal(err)
 				}
@@ -132,10 +134,11 @@ func Worker(mapf func(string, string) []KeyValue,
 						}
 						kva = append(kva, kv)
 					}
+					sort.Sort(ByKey(kva))
 
 					//
 					// call Reduce on each distinct key in intermediate[],
-					// and print the result to mr-out-0.
+					// and print the result to mr-out-Y.
 					//
 					i := 0
 					for i < len(kva) {
@@ -158,7 +161,8 @@ func Worker(mapf func(string, string) []KeyValue,
 					reduceFile.Close()
 				}
 
-				taskCompletionArgs := TaskCompletion{m_taskId: reply.m_taskID, m_taskType: TaskMap}
+				taskCompletionArgs := TaskCompletion{M_taskId: reply.M_taskID, M_taskType: TaskReduce}
+				// TODO: This is unused could we remove? 
 				replyCompletion := TaskCompletion{}
 				ok := call("Coordinator.RegisterTaskCompletion", &taskCompletionArgs, &replyCompletion)
 				if !ok {

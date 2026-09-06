@@ -26,6 +26,9 @@ type ExampleReply struct {
 
 
 type RequestTask struct {
+	// gob cannot encode a struct with no exported fields, so carry a
+	// placeholder field even though the request needs no real payload.
+	M_workerID int
 }
 
 type TaskType int
@@ -36,16 +39,17 @@ const (
 )
 
 type TaskReply struct {
-	m_filename string 
-	m_nReduce int
-	m_taskID int 
-	m_taskType TaskType
+	M_filename string 
+	// The total number of reduce tasks
+	M_nReduce int
+	M_taskID int 
+	M_taskType TaskType
 }
 
 
 type TaskCompletion struct {
-	m_taskId int 
-	m_taskType TaskType 
+	M_taskId int 
+	M_taskType TaskType 
 }
 
 
