@@ -13,22 +13,31 @@ import (
 // Enum for state of a task
 type TaskState int
 const (
+	// The task is available
 	TaskAvailable TaskState = iota
+	// The task is in progress 
 	TaskInProgress
+	// The task is done 
 	TaskDone
 )
 
 // Enum for state of the coordinator
 type CoordinatorState int
 const (
+	// Coordinator still has map tasks to handout 
 	CoordinatorMapping CoordinatorState = iota
+	// Workers have finished all map tasks
 	CoordinatorMapped
+	// Coordinator still has reduce tasks to handout 
 	CoordinatorReducing
+	// All map and reduce tasks are done 
 	CoordinatorDone
 )
 
 type MapTask struct {
+	// Current state of a given map task
 	M_taskState TaskState
+	// File associated with the map task 
 	M_fileName string
 }
 
