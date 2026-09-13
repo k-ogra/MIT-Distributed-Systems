@@ -178,6 +178,8 @@ func (c *Coordinator) server() {
 // if the entire job has finished.
 //
 func (c *Coordinator) Done() bool {
+	c.M_taskMapLock.Lock()
+	defer c.M_taskMapLock.Unlock()
 	return c.M_state == CoordinatorDone  
 }
 
